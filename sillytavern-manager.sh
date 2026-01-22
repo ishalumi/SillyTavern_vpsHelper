@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# SillyTavern VPS 管理脚本（Debian/Ubuntu）
+# 苏小糖 - SillyTavern VPS 管理脚本（Debian/Ubuntu）
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
@@ -696,11 +696,11 @@ menu() {
     st_info=$(get_tavern_status)
     clear
     echo -e "${C_PINK}"
-    echo "    |\__/,|   (\`\\"
-    echo "  _.|o o  |_   ) )  SillyTavern VPS Manager"
-    echo "---(((---(((------------------------------------"
+    echo "       ╱|、"
+    echo "     (ﾟ､ ｡７   苏小糖 - SillyTavern VPS 管理器"
+    echo "      |、ﾞ ~ヽ ----------------------------------"
+    echo "      じしf_, )ノ 🐾 主人，今天也要加油喵！"
     echo -e "${NC}"
-    echo -e "  ${C_BOLD}主人，欢迎回来！${NC}"
     echo -e "  脚本版本: ${v_info}"
     echo -e "  运行状态: ${st_info}"
     echo -e "${C_GRAY}------------------------------------------------${NC}"
