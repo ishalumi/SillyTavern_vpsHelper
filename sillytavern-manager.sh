@@ -61,6 +61,20 @@ tty_out() {
   printf "%s\n" "$*" > "${PROMPT_OUT}"
 }
 
+confirm_danger() {
+  local msg="$1"
+  local input=""
+  tty_out "⚠️  ${msg}"
+  if ! prompt input "请输入 确认 以继续: "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
+  if [[ "${input}" != "确认" ]]; then
+    warn "未确认，已取消操作。"
+    return 1
+  fi
+}
+
 ensure_os() {
   if [[ -f /etc/os-release ]]; then
     . /etc/os-release
@@ -178,6 +192,13 @@ update_basic_auth_user() {
   local username="$2"
   local password="$3"
   local tmp
+  if ! grep -qE '^basicAuthUser:' "${file}"; then
+    cat >> "${file}" <<EOF
+basicAuthUser:
+  username: "user"
+  password: "password"
+EOF
+  fi
   tmp="$(mktemp)"
   awk -v u="${username}" -v p="${password}" '
     BEGIN { inBlock=0 }
@@ -234,6 +255,11 @@ setup_auth_config() {
   set_yaml_value "basicAuthMode" "true" "${cfg}"
   update_basic_auth_user "${cfg}" "${u_esc}" "${p_esc}"
   ok "已更新 config.yaml（已关闭 IP 白名单，启用用户名密码）。"
+}
+
+change_auth_credentials() {
+  ensure_base_dir
+  setup_auth_config
 }
 
 install_self() {
@@ -303,6 +329,7 @@ http_get() {
 
 fetch_tags() {
   ensure_git
+  info "正在获取版本列表..."
   local repo="https://github.com/SillyTavern/SillyTavern.git"
   git ls-remote --tags --refs "${repo}" \
     | awk '{print $2}' \
@@ -529,6 +556,56 @@ switch_version() {
   ok "已切换到版本：${version}"
 }
 
+update_script() {
+  ensure_base_dir
+  ensure_http_client
+  local target="${BASE_DIR}/${SCRIPT_NAME}"
+  local tmp
+  tmp="$(mktemp)"
+  info "正在更新管理脚本..."
+  http_get "${SELF_URL}" > "${tmp}"
+  if [[ ! -s "${tmp}" ]]; then
+    err "下载失败或内容为空，已取消。"
+    rm -f "${tmp}"
+    return 1
+  fi
+  ${SUDO} cp -f "${tmp}" "${target}"
+  ${SUDO} chmod +x "${target}"
+  rm -f "${tmp}"
+  ok "脚本已更新完成。请重新执行 st。"
+}
+
+uninstall_sillytavern() {
+  ensure_sudo
+  confirm_danger "将停止容器并删除所有数据（含配置、数据、插件、扩展）。此操作不可恢复！" || return 1
+
+  local compose=""
+  if command -v docker >/dev/null 2>&1; then
+    if docker compose version >/dev/null 2>&1; then
+      compose="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then
+      compose="docker-compose"
+    fi
+  fi
+
+  if [[ -n "${compose}" && -f "${COMPOSE_FILE}" ]]; then
+    ${compose} -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" down --remove-orphans || true
+  elif command -v docker >/dev/null 2>&1; then
+    docker rm -f sillytavern >/dev/null 2>&1 || true
+  fi
+
+  ${SUDO} rm -rf \
+    "${BASE_DIR}/config" \
+    "${BASE_DIR}/data" \
+    "${BASE_DIR}/plugins" \
+    "${BASE_DIR}/extensions" \
+    "${COMPOSE_FILE}" \
+    "${ENV_FILE}" \
+    "${VERSION_FILE}"
+
+  ok "已卸载酒馆并清空数据。"
+}
+
 menu() {
   while true; do
     echo
@@ -541,6 +618,9 @@ menu() {
     echo "6. Nginx 反向代理配置"
     echo "7. 查看状态"
     echo "8. 查看日志"
+    echo "9. 修改用户名/密码"
+    echo "10. 更新管理脚本"
+    echo "11. 卸载酒馆并清空数据"
     echo "0. 退出"
     echo "==========================================="
     local choice=""
@@ -567,6 +647,9 @@ menu() {
       6) configure_nginx ;;
       7) show_status ;;
       8) show_logs ;;
+      9) change_auth_credentials ;;
+      10) update_script ;;
+      11) uninstall_sillytavern ;;
       0) exit 0 ;;
       *) warn "无效选项，请重试。" ;;
     esac

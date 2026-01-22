@@ -52,6 +52,8 @@ st
 `config.yaml` 模板更新 `/opt/sillytavern/config/config.yaml`，同时关闭
 IP 白名单模式并启用用户名密码登录（`basicAuthMode`）。
 
+可在菜单中使用“修改用户名/密码”随时更新凭据。
+
 ## 安全提示（HTTP 风险）
 
 若你在安装完成时拒绝配置 Nginx，脚本会提示 **HTTP 明文访问存在风险**。请务必在 OpenResty/Nginx/其他反代中自建 HTTPS。
