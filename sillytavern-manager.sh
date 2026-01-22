@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.6.2"
+SCRIPT_VERSION="1.6.3"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
@@ -76,7 +76,7 @@ prompt() {
   local __var_name="$1"
   local __msg="$2"
   local __value=""
-  printf "${C_BOLD}${__msg}${NC}" > "${PROMPT_OUT}"
+  printf "%b" "${C_BOLD}${__msg}${NC}" > "${PROMPT_OUT}"
   if ! IFS= read -r __value < "${PROMPT_IN}"; then
     return 1
   fi
@@ -87,7 +87,7 @@ prompt_secret() {
   local __var_name="$1"
   local __msg="$2"
   local __value=""
-  printf "${C_BOLD}${__msg}${NC}" > "${PROMPT_OUT}"
+  printf "%b" "${C_BOLD}${__msg}${NC}" > "${PROMPT_OUT}"
   if command -v stty >/dev/null 2>&1; then
     stty -echo < "${PROMPT_IN}" 2>/dev/null || true
   fi
@@ -105,19 +105,21 @@ prompt_secret() {
 }
 
 tty_out() {
-  echo -e "$*" > "${PROMPT_OUT}"
+  printf "%b\n" "$*" > "${PROMPT_OUT}"
 }
 
 confirm_danger() {
   local msg="$1"
   local input=""
+  local code
+  code=$((RANDOM % 9000 + 1000))
   tty_out "${C_RED}⚠️  ${msg}${NC}"
-  if ! prompt input "请输入 确认 以继续: "; then
+  if ! prompt input "请输入验证码 ${C_GOLD}${code}${NC} 以确认继续: "; then
     err "无法读取输入，已取消。"
     return 1
   fi
-  if [[ "${input}" != "确认" ]]; then
-    warn "未确认，已取消操作。"
+  if [[ "${input}" != "${code}" ]]; then
+    warn "验证码错误，已取消操作。"
     return 1
   fi
 }
