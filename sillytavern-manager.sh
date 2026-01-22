@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.7.0"
+SCRIPT_VERSION="1.7.1"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
@@ -63,13 +63,16 @@ fetch_remote_version() {
     body="$(curl -fsSL --connect-timeout 3 --max-time 5 "${SELF_URL}" 2>/dev/null || true)"
   elif command -v wget >/dev/null 2>&1; then
     body="$(wget -qO- --timeout=5 "${SELF_URL}" 2>/dev/null || true)"
-  else
+  fi
+
+  if [[ -z "${body}" ]]; then
     echo "Unknown"
     return 0
   fi
 
   local v=""
-  v="$(printf "%s\n" "${body}" | grep -m1 'SCRIPT_VERSION=' | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+  # 兼容单引号、双引号、无引号，且只取第一行匹配项
+  v="$(echo "${body}" | grep -m1 '^SCRIPT_VERSION=' | sed -E "s/^SCRIPT_VERSION=['\"]?([^'\"]+)['\"]?/\1/" | tr -d '\r\n ' || true)"
   echo "${v:-Unknown}"
 }
 
@@ -1100,7 +1103,7 @@ get_tavern_status() {
     return
   fi
   local status
-  status=$(docker inspect -f '{{.State.Status}}' sillytavern 2>/dev/null || echo "not_found")
+  status=$(docker inspect -f '{{.State.Status}}' sillytavern 2>/dev/null | tr -d '\r\n ' || echo "not_found")
   case "${status}" in
     running) echo -e "${C_LIME}正在运行 (Running)${NC}" ;;
     exited)  echo -e "${C_RED}已停止 (Stopped)${NC}" ;;
