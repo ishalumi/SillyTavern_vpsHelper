@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.6.3"
+SCRIPT_VERSION="1.7.0"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
@@ -20,6 +20,17 @@ DEFAULT_USER_HANDLE="default-user"
 # 推荐扩展（用户级安装）
 RECOMMENDED_EXT_NAMES=("JS-Slash-Runner" "LittleWhiteBox" "ST-Prompt-Template")
 RECOMMENDED_EXT_URLS=("https://github.com/N0VI028/JS-Slash-Runner.git" "https://github.com/RT15548/LittleWhiteBox.git" "https://github.com/zonde306/ST-Prompt-Template.git")
+
+# 苏小糖语录库
+GREETINGS=(
+  "🐾 主人，今天也要甜甜的喵！"
+  "🐾 欢迎回来，今天也要元气满满喵！"
+  "🐾 又是为主人服务的一天，开心喵！"
+  "🐾 这里的每一个数据包，都带着苏小糖的爱喵~"
+  "🐾 只要有主人在，苏小糖就不觉得累喵！"
+  "🐾 今天的代码也很听话，主人也要乖乖的喵~"
+  "🐾 哪怕是数字世界，也要给主人最暖的拥抱喵！"
+)
 
 # --- 色彩定义 (Neko Theme) ---
 C_PINK='\033[38;5;205m'
@@ -1123,11 +1134,12 @@ menu() {
   while true; do
     local st_info
     st_info=$(get_tavern_status)
+    local greeting="${GREETINGS[$((RANDOM % ${#GREETINGS[@]}))]}"
     clear
     echo -e "${C_PINK}"
     echo "      |\__/,|   (\`\\          苏小糖 - SillyTavern"
     echo "    _.|o o  |_   ) )        VPS 一键管理脚本"
-    echo "  -(((---(((--------      🐾 主人，今天也要甜甜的喵！"
+    echo "  -(((---(((--------      ${greeting}"
     echo -e "${NC}"
     echo -e "  脚本版本: ${v_info}"
     echo -e "  运行状态: ${st_info}"
