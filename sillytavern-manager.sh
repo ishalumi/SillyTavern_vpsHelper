@@ -30,9 +30,14 @@ warn() { echo "⚠️  $*"; }
 err() { echo "❌ $*" >&2; }
 
 init_prompt_tty() {
-  if [[ ! -t 0 && -r /dev/tty && -w /dev/tty ]]; then
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    # 统一走 /dev/tty，避免在命令替换（$(...)）中输出被捕获导致看不到提示/列表。
     PROMPT_IN="/dev/tty"
     PROMPT_OUT="/dev/tty"
+  else
+    PROMPT_IN="/dev/stdin"
+    # 让交互信息走 stderr，避免污染返回值（stdout）。
+    PROMPT_OUT="/dev/stderr"
   fi
 }
 
@@ -40,7 +45,8 @@ prompt() {
   local __var_name="$1"
   local __msg="$2"
   local __value=""
-  if ! IFS= read -r -p "${__msg}" __value < "${PROMPT_IN}"; then
+  printf "%s" "${__msg}" > "${PROMPT_OUT}"
+  if ! IFS= read -r __value < "${PROMPT_IN}"; then
     return 1
   fi
   printf -v "${__var_name}" '%s' "${__value}"
@@ -50,8 +56,18 @@ prompt_secret() {
   local __var_name="$1"
   local __msg="$2"
   local __value=""
-  if ! IFS= read -r -s -p "${__msg}" __value < "${PROMPT_IN}"; then
+  printf "%s" "${__msg}" > "${PROMPT_OUT}"
+  if command -v stty >/dev/null 2>&1; then
+    stty -echo < "${PROMPT_IN}" 2>/dev/null || true
+  fi
+  if ! IFS= read -r __value < "${PROMPT_IN}"; then
+    if command -v stty >/dev/null 2>&1; then
+      stty echo < "${PROMPT_IN}" 2>/dev/null || true
+    fi
     return 1
+  fi
+  if command -v stty >/dev/null 2>&1; then
+    stty echo < "${PROMPT_IN}" 2>/dev/null || true
   fi
   printf "\n" > "${PROMPT_OUT}"
   printf -v "${__var_name}" '%s' "${__value}"
@@ -302,7 +318,6 @@ EOF
 
 write_compose() {
   ${SUDO} tee "${COMPOSE_FILE}" >/dev/null <<'EOF'
-version: "3.8"
 services:
   sillytavern:
     image: ghcr.io/sillytavern/sillytavern:${ST_VERSION}
@@ -329,15 +344,22 @@ http_get() {
 
 fetch_tags() {
   ensure_git
-  info "正在获取版本列表..."
   local repo="https://github.com/SillyTavern/SillyTavern.git"
-  git ls-remote --tags --refs "${repo}" \
+  local out=""
+  set +e
+  out="$(git ls-remote --tags --refs "${repo}" 2>/dev/null)"
+  set -e
+  if [[ -z "${out}" ]]; then
+    return 0
+  fi
+  echo "${out}" \
     | awk '{print $2}' \
     | sed 's#refs/tags/##' \
     | sort -Vr
 }
 
 choose_version() {
+  tty_out "正在获取版本列表..."
   local tags
   tags="$(fetch_tags)"
   if [[ -z "${tags}" ]]; then
@@ -395,7 +417,10 @@ install_sillytavern() {
   ensure_base_dir
 
   local version
-  version="$(choose_version)"
+  if ! version="$(choose_version)"; then
+    warn "已取消安装。"
+    return 0
+  fi
   read_env
   local port="${ST_PORT:-8000}"
   write_env "${version}" "${port}"
@@ -546,7 +571,10 @@ switch_version() {
   ensure_base_deps
   ensure_base_dir
   local version
-  version="$(choose_version)"
+  if ! version="$(choose_version)"; then
+    warn "已取消切换版本。"
+    return 0
+  fi
   read_env
   local port="${ST_PORT:-8000}"
   write_env "${version}" "${port}"
