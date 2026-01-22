@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="1.4.1"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
@@ -39,7 +39,7 @@ COMPOSE_CMD=""
 PROMPT_IN="/dev/stdin"
 PROMPT_OUT="/dev/stdout"
 
-trap 'echo -e "${C_RED}❌ 出错了：第 ${LINENO} 行执行失败，请检查后重试。${NC}"' ERR
+trap 'echo -e "${C_RED}❌ 出错了：第 ${LINENO} 行执行失败，请检查后重试。${NC}" >&2' ERR
 
 info() { echo -e "${C_CYAN}ℹ️  $*${NC}"; }
 ok() { echo -e "${C_LIME}✅ $*${NC}"; }
@@ -47,11 +47,19 @@ warn() { echo -e "${C_GOLD}⚠️  $*${NC}"; }
 err() { echo -e "${C_RED}❌ $*${NC}" >&2; }
 
 fetch_remote_version() {
-  ensure_http_client
+  # 版本检查不应触发依赖安装或导致脚本报错；失败时返回 Unknown。
+  local body=""
+  if command -v curl >/dev/null 2>&1; then
+    body="$(curl -fsSL --connect-timeout 3 --max-time 5 "${SELF_URL}" 2>/dev/null || true)"
+  elif command -v wget >/dev/null 2>&1; then
+    body="$(wget -qO- --timeout=5 "${SELF_URL}" 2>/dev/null || true)"
+  else
+    echo "Unknown"
+    return 0
+  fi
+
   local v=""
-  set +e
-  v=$(curl -s --connect-timeout 3 "${SELF_URL}" | grep -m1 "SCRIPT_VERSION=" | cut -d'"' -f2)
-  set -e
+  v="$(printf "%s\n" "${body}" | grep -m1 'SCRIPT_VERSION=' | sed -E 's/.*"([^"]+)".*/\1/' || true)"
   echo "${v:-Unknown}"
 }
 
