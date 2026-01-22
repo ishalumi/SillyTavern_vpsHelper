@@ -15,6 +15,16 @@ NGINX_LINK="/etc/nginx/sites-enabled/sillytavern.conf"
 SELF_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/sillytavern-manager.sh"
 CONFIG_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/config.yaml"
 
+# --- 色彩定义 (Neko Theme) ---
+C_PINK='\033[38;5;205m'
+C_CYAN='\033[38;5;51m'
+C_GOLD='\033[38;5;220m'
+C_LIME='\033[38;5;118m'
+C_RED='\033[38;5;196m'
+C_GRAY='\033[38;5;245m'
+C_BOLD='\033[1m'
+NC='\033[0m'
+
 SUDO=""
 APT_UPDATED="0"
 HTTP_CMD=""
@@ -22,21 +32,28 @@ COMPOSE_CMD=""
 PROMPT_IN="/dev/stdin"
 PROMPT_OUT="/dev/stdout"
 
-trap 'echo "❌ 出错了：第 ${LINENO} 行执行失败，请检查后重试。"' ERR
+trap 'echo -e "${C_RED}❌ 出错了：第 ${LINENO} 行执行失败，请检查后重试。${NC}"' ERR
 
-info() { echo "ℹ️  $*"; }
-ok() { echo "✅ $*"; }
-warn() { echo "⚠️  $*"; }
-err() { echo "❌ $*" >&2; }
+info() { echo -e "${C_CYAN}ℹ️  $*${NC}"; }
+ok() { echo -e "${C_LIME}✅ $*${NC}"; }
+warn() { echo -e "${C_GOLD}⚠️  $*${NC}"; }
+err() { echo -e "${C_RED}❌ $*${NC}" >&2; }
+
+fetch_remote_version() {
+  ensure_http_client
+  local v=""
+  set +e
+  v=$(curl -s --connect-timeout 3 "${SELF_URL}" | grep -m1 "SCRIPT_VERSION=" | cut -d'"' -f2)
+  set -e
+  echo "${v:-Unknown}"
+}
 
 init_prompt_tty() {
   if [[ -r /dev/tty && -w /dev/tty ]]; then
-    # 统一走 /dev/tty，避免在命令替换（$(...)）中输出被捕获导致看不到提示/列表。
     PROMPT_IN="/dev/tty"
     PROMPT_OUT="/dev/tty"
   else
     PROMPT_IN="/dev/stdin"
-    # 让交互信息走 stderr，避免污染返回值（stdout）。
     PROMPT_OUT="/dev/stderr"
   fi
 }
@@ -45,7 +62,7 @@ prompt() {
   local __var_name="$1"
   local __msg="$2"
   local __value=""
-  printf "%s" "${__msg}" > "${PROMPT_OUT}"
+  printf "${C_BOLD}${__msg}${NC}" > "${PROMPT_OUT}"
   if ! IFS= read -r __value < "${PROMPT_IN}"; then
     return 1
   fi
@@ -56,7 +73,7 @@ prompt_secret() {
   local __var_name="$1"
   local __msg="$2"
   local __value=""
-  printf "%s" "${__msg}" > "${PROMPT_OUT}"
+  printf "${C_BOLD}${__msg}${NC}" > "${PROMPT_OUT}"
   if command -v stty >/dev/null 2>&1; then
     stty -echo < "${PROMPT_IN}" 2>/dev/null || true
   fi
@@ -80,7 +97,7 @@ tty_out() {
 confirm_danger() {
   local msg="$1"
   local input=""
-  tty_out "⚠️  ${msg}"
+  tty_out "${C_RED}⚠️  ${msg}${NC}"
   if ! prompt input "请输入 确认 以继续: "; then
     err "无法读取输入，已取消。"
     return 1
@@ -635,24 +652,43 @@ uninstall_sillytavern() {
 }
 
 menu() {
+  local remote_v
+  remote_v=$(fetch_remote_version)
+  local v_info="${C_LIME}${SCRIPT_VERSION}${NC}"
+  if [[ "${remote_v}" != "Unknown" && "${remote_v}" != "${SCRIPT_VERSION}" ]]; then
+    v_info="${C_RED}${SCRIPT_VERSION} (有更新: ${remote_v}!)${NC}"
+  fi
+
   while true; do
-    echo
-    echo "========== SillyTavern VPS 管理器 =========="
-    echo "1. 安装酒馆（选择版本）"
-    echo "2. 启动酒馆"
-    echo "3. 停止酒馆"
-    echo "4. 重启酒馆"
-    echo "5. 版本管理（查看/切换）"
-    echo "6. Nginx 反向代理配置"
-    echo "7. 查看状态"
-    echo "8. 查看日志"
-    echo "9. 修改用户名/密码"
-    echo "10. 更新管理脚本"
-    echo "11. 卸载酒馆并清空数据"
-    echo "0. 退出"
-    echo "==========================================="
+    clear
+    echo -e "${C_PINK}"
+    echo "    |\__/,|   (\`\\"
+    echo "  _.|o o  |_   ) )  SillyTavern VPS Manager"
+    echo "---(((---(((------------------------------------"
+    echo -e "${NC}"
+    echo -e "  ${C_BOLD}主人，欢迎回来！${NC} 本地版本: ${v_info}"
+    echo -e "${C_GRAY}------------------------------------------------${NC}"
+
+    echo -e "${C_CYAN}[1] 部署与版本 (Deployment & Versions)${NC}"
+    echo -e "  1. 安装酒馆 (选择版本)       5. 版本管理 (查看/切换)"
+    echo ""
+    echo -e "${C_CYAN}[2] 服务管理 (Service Management)${NC}"
+    echo -e "  2. 启动酒馆                  3. 停止酒馆"
+    echo -e "  4. 重启酒馆"
+    echo ""
+    echo -e "${C_CYAN}[3] 网络配置 (Networking)${NC}"
+    echo -e "  6. Nginx 反向代理配置"
+    echo ""
+    echo -e "${C_CYAN}[4] 监控与日志 (Monitoring & Logs)${NC}"
+    echo -e "  7. 查看状态                  8. 查看日志"
+    echo ""
+    echo -e "${C_CYAN}[5] 系统与安全 (System & Security)${NC}"
+    echo -e "  9. 修改用户名/密码          10. 更新管理脚本"
+    echo -e " 11. 卸载酒馆并清空数据        ${C_GRAY}0. 退出${NC}"
+    echo -e "${C_GRAY}------------------------------------------------${NC}"
+
     local choice=""
-    if ! prompt choice "请选择操作: "; then
+    if ! prompt choice "${C_GOLD}🐾 请选择操作 [0-11]: ${NC}"; then
       err "无法读取输入，已退出。"
       return 1
     fi
