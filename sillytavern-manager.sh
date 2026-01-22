@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.6.0"
+SCRIPT_VERSION="1.6.1"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
@@ -734,8 +734,13 @@ install_sillytavern() {
   ok "SillyTavern 已安装并启动。"
 
   echo
+  tty_out "${C_CYAN}📦 发现苏小糖为您准备的推荐扩展套装：${NC}"
+  tty_out "   - ${C_BOLD}酒馆助手${NC} (JS-Slash-Runner): 脚本运行器"
+  tty_out "   - ${C_BOLD}小白x${NC} (LittleWhiteBox): 综合工具箱"
+  tty_out "   - ${C_BOLD}提示词模板${NC} (ST-Prompt-Template): 常用预设"
+  echo
   local ext_ans=""
-  if prompt ext_ans "是否安装推荐扩展（用户级）？(Y/N) "; then
+  if prompt ext_ans "是否安装上述推荐扩展（用户级）？(Y/N) "; then
     if [[ "${ext_ans,,}" == "y" || "${ext_ans,,}" == "yes" ]]; then
       install_recommended_extensions yes
     fi
