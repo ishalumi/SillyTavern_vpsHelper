@@ -15,6 +15,13 @@ NGINX_LINK="/etc/nginx/sites-enabled/sillytavern.conf"
 SELF_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/sillytavern-manager.sh"
 CONFIG_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/config.yaml"
 
+# 用户级扩展默认落在 data/default-user/extensions
+DEFAULT_USER_HANDLE="default-user"
+
+# 推荐扩展（用户级安装）
+RECOMMENDED_EXT_NAMES=("JS-Slash-Runner" "LittleWhiteBox" "ST-Prompt-Template")
+RECOMMENDED_EXT_URLS=("https://github.com/N0VI028/JS-Slash-Runner.git" "https://github.com/RT15548/LittleWhiteBox.git" "https://github.com/zonde306/ST-Prompt-Template.git")
+
 # --- 色彩定义 (Neko Theme) ---
 C_PINK='\033[38;5;205m'
 C_CYAN='\033[38;5;51m'
