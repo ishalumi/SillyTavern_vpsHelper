@@ -696,10 +696,9 @@ menu() {
     st_info=$(get_tavern_status)
     clear
     echo -e "${C_PINK}"
-    echo "       ╱|、"
-    echo "     (ﾟ､ ｡７   苏小糖 - SillyTavern VPS 管理器"
-    echo "      |、ﾞ ~ヽ ----------------------------------"
-    echo "      じしf_, )ノ 🐾 主人，今天也要加油喵！"
+    echo "      |\__/,|   (\`\\          苏小糖 - SillyTavern"
+    echo "    _.|o o  |_   ) )        VPS 一键管理脚本"
+    echo "  -(((---(((--------      🐾 主人，今天也要甜甜的喵！"
     echo -e "${NC}"
     echo -e "  脚本版本: ${v_info}"
     echo -e "  运行状态: ${st_info}"
