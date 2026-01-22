@@ -617,7 +617,10 @@ update_script() {
   ${SUDO} cp -f "${tmp}" "${target}"
   ${SUDO} chmod +x "${target}"
   rm -f "${tmp}"
-  ok "脚本已更新完成。请重新执行 st。"
+  ok "脚本已更新完成。"
+  warn "请按回车键退出当前会话，并重新执行 st 以使更新生效。"
+  pause_and_back
+  exit 0
 }
 
 uninstall_sillytavern() {
