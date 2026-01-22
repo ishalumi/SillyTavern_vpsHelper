@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.7.1"
+SCRIPT_VERSION="1.0.0"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
@@ -801,7 +801,7 @@ prompt_caddy_after_install() {
     fi
 
     if [[ "${key}" == "10" ]]; then
-      ok "密钥正确。虽然猫娘很担心，但还是尊重主人的选择喵。"
+      ok "密钥正确。虽然苏小糖很担心，但还是尊重主人的选择喵。"
       warn "已跳过反向代理配置。请务必尽快自建 HTTPS 环境。"
     else
       err "密钥错误！请认真阅读小作文并数清句号数目，喵！"
