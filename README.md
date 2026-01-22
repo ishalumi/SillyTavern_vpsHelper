@@ -46,6 +46,12 @@ st
 - 安装酒馆时自动检查并安装：`curl/wget`、`git`、`docker`、`docker compose`
 - 选择配置反代时才安装：`nginx`、`certbot`
 
+## 访问控制与首次安装
+
+首次安装时脚本会要求设置访问用户名与密码，并基于默认
+`config.yaml` 模板更新 `/opt/sillytavern/config/config.yaml`，同时关闭
+IP 白名单模式并启用用户名密码登录（`basicAuthMode`）。
+
 ## 安全提示（HTTP 风险）
 
 若你在安装完成时拒绝配置 Nginx，脚本会提示 **HTTP 明文访问存在风险**。请务必在 OpenResty/Nginx/其他反代中自建 HTTPS。

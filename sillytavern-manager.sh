@@ -13,12 +13,14 @@ COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
 NGINX_CONF="/etc/nginx/sites-available/sillytavern.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/sillytavern.conf"
 SELF_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/sillytavern-manager.sh"
+CONFIG_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/config.yaml"
 
 SUDO=""
 APT_UPDATED="0"
 HTTP_CMD=""
 COMPOSE_CMD=""
-PROMPT_TTY="/dev/stdin"
+PROMPT_IN="/dev/stdin"
+PROMPT_OUT="/dev/stdout"
 
 trap 'echo "❌ 出错了：第 ${LINENO} 行执行失败，请检查后重试。"' ERR
 
@@ -28,8 +30,9 @@ warn() { echo "⚠️  $*"; }
 err() { echo "❌ $*" >&2; }
 
 init_prompt_tty() {
-  if [[ ! -t 0 && -r /dev/tty ]]; then
-    PROMPT_TTY="/dev/tty"
+  if [[ ! -t 0 && -r /dev/tty && -w /dev/tty ]]; then
+    PROMPT_IN="/dev/tty"
+    PROMPT_OUT="/dev/tty"
   fi
 }
 
@@ -37,18 +40,25 @@ prompt() {
   local __var_name="$1"
   local __msg="$2"
   local __value=""
-  if ! IFS= read -r -p "${__msg}" __value < "${PROMPT_TTY}"; then
+  if ! IFS= read -r -p "${__msg}" __value < "${PROMPT_IN}"; then
     return 1
   fi
   printf -v "${__var_name}" '%s' "${__value}"
 }
 
-tty_out() {
-  if [[ -w "${PROMPT_TTY}" ]]; then
-    printf "%s\n" "$*" > "${PROMPT_TTY}"
-  else
-    printf "%s\n" "$*" >&2
+prompt_secret() {
+  local __var_name="$1"
+  local __msg="$2"
+  local __value=""
+  if ! IFS= read -r -s -p "${__msg}" __value < "${PROMPT_IN}"; then
+    return 1
   fi
+  printf "\n" > "${PROMPT_OUT}"
+  printf -v "${__var_name}" '%s' "${__value}"
+}
+
+tty_out() {
+  printf "%s\n" "$*" > "${PROMPT_OUT}"
 }
 
 ensure_os() {
@@ -133,6 +143,97 @@ ensure_base_deps() {
 ensure_base_dir() {
   ${SUDO} mkdir -p "${BASE_DIR}"/{config,data,plugins,extensions,nginx,ssl}
   echo "${SCRIPT_VERSION}" | ${SUDO} tee "${SCRIPT_VERSION_FILE}" >/dev/null
+}
+
+yaml_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf "%s" "${value}"
+}
+
+ensure_config_template() {
+  local cfg="${BASE_DIR}/config/config.yaml"
+  if [[ -f "${cfg}" ]]; then
+    return 0
+  fi
+  ensure_http_client
+  info "未发现 config.yaml，正在下载默认模板..."
+  http_get "${CONFIG_URL}" | ${SUDO} tee "${cfg}" >/dev/null
+}
+
+set_yaml_value() {
+  local key="$1"
+  local value="$2"
+  local file="$3"
+  if grep -qE "^${key}:" "${file}"; then
+    ${SUDO} sed -i -E "s|^${key}:[[:space:]]*.*|${key}: ${value}|" "${file}"
+  else
+    echo "${key}: ${value}" | ${SUDO} tee -a "${file}" >/dev/null
+  fi
+}
+
+update_basic_auth_user() {
+  local file="$1"
+  local username="$2"
+  local password="$3"
+  local tmp
+  tmp="$(mktemp)"
+  awk -v u="${username}" -v p="${password}" '
+    BEGIN { inBlock=0 }
+    /^basicAuthUser:/ { print; inBlock=1; next }
+    inBlock==1 && /^[[:space:]]+username:/ { print "  username: \"" u "\""; next }
+    inBlock==1 && /^[[:space:]]+password:/ { print "  password: \"" p "\""; inBlock=0; next }
+    { print }
+  ' "${file}" > "${tmp}"
+  ${SUDO} mv "${tmp}" "${file}"
+}
+
+setup_auth_config() {
+  local cfg="${BASE_DIR}/config/config.yaml"
+  ensure_config_template
+
+  local username=""
+  local password=""
+  local confirm=""
+
+  if ! prompt username "请设置访问用户名: "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
+  if [[ -z "${username}" ]]; then
+    err "用户名不能为空，已取消。"
+    return 1
+  fi
+
+  if ! prompt_secret password "请设置访问密码: "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
+  if [[ -z "${password}" ]]; then
+    err "密码不能为空，已取消。"
+    return 1
+  fi
+  if ! prompt_secret confirm "请再次输入密码: "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
+  if [[ "${password}" != "${confirm}" ]]; then
+    err "两次密码不一致，已取消。"
+    return 1
+  fi
+
+  local u_esc
+  local p_esc
+  u_esc="$(yaml_escape "${username}")"
+  p_esc="$(yaml_escape "${password}")"
+
+  set_yaml_value "whitelistMode" "false" "${cfg}"
+  set_yaml_value "enableForwardedWhitelist" "false" "${cfg}"
+  set_yaml_value "whitelistDockerHosts" "false" "${cfg}"
+  set_yaml_value "basicAuthMode" "true" "${cfg}"
+  update_basic_auth_user "${cfg}" "${u_esc}" "${p_esc}"
+  ok "已更新 config.yaml（已关闭 IP 白名单，启用用户名密码）。"
 }
 
 install_self() {
@@ -271,6 +372,7 @@ install_sillytavern() {
   read_env
   local port="${ST_PORT:-8000}"
   write_env "${version}" "${port}"
+  setup_auth_config
   write_compose
   record_version "${version}"
 
