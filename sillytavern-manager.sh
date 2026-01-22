@@ -475,6 +475,10 @@ main() {
   ensure_sudo
   init_prompt_tty
   install_self
+  if [[ ! -t 0 ]]; then
+    info "检测到管道执行，脚本已安装完成。请执行 st 进入交互菜单。"
+    return 0
+  fi
   menu
 }
 

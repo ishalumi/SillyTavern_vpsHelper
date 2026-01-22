@@ -8,13 +8,14 @@
 curl -fsSL https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/sillytavern-manager.sh | bash
 ```
 
-> 提示：这是来自你 GitHub 仓库的脚本。
+> 提示：这是来自你 GitHub 仓库的脚本。管道执行完成后请直接运行 `st` 进入交互菜单。
 
 ## 一键运行（wget）
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/sillytavern-manager.sh | bash
 ```
+> 管道执行完成后请直接运行 `st` 进入交互菜单。
 
 ## 下载后本地运行
 
