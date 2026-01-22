@@ -651,6 +651,35 @@ uninstall_sillytavern() {
   ok "已卸载酒馆并清空数据。"
 }
 
+get_tavern_status() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo -e "${C_GRAY}未安装 Docker${NC}"
+    return
+  fi
+  local status
+  status=$(docker inspect -f '{{.State.Status}}' sillytavern 2>/dev/null || echo "not_found")
+  case "${status}" in
+    running) echo -e "${C_LIME}正在运行 (Running)${NC}" ;;
+    exited)  echo -e "${C_RED}已停止 (Stopped)${NC}" ;;
+    paused)  echo -e "${C_GOLD}已暂停 (Paused)${NC}" ;;
+    restarting) echo -e "${C_CYAN}正在重启 (Restarting)${NC}" ;;
+    not_found)
+      if [[ -f "${COMPOSE_FILE}" ]]; then
+        echo -e "${C_GRAY}未启动 (Not Started)${NC}"
+      else
+        echo -e "${C_GRAY}未安装 (Not Installed)${NC}"
+      fi
+      ;;
+    *) echo -e "${C_GRAY}未知 (${status})${NC}" ;;
+  esac
+}
+
+pause_and_back() {
+  local dummy
+  echo ""
+  prompt dummy "${C_GRAY}按回车键返回菜单...${NC}"
+}
+
 menu() {
   local remote_v
   remote_v=$(fetch_remote_version)
@@ -660,13 +689,17 @@ menu() {
   fi
 
   while true; do
+    local st_info
+    st_info=$(get_tavern_status)
     clear
     echo -e "${C_PINK}"
     echo "    |\__/,|   (\`\\"
     echo "  _.|o o  |_   ) )  SillyTavern VPS Manager"
     echo "---(((---(((------------------------------------"
     echo -e "${NC}"
-    echo -e "  ${C_BOLD}主人，欢迎回来！${NC} 本地版本: ${v_info}"
+    echo -e "  ${C_BOLD}主人，欢迎回来！${NC}"
+    echo -e "  脚本版本: ${v_info}"
+    echo -e "  运行状态: ${st_info}"
     echo -e "${C_GRAY}------------------------------------------------${NC}"
 
     echo -e "${C_CYAN}[1] 部署与版本 (Deployment & Versions)${NC}"
@@ -693,10 +726,10 @@ menu() {
       return 1
     fi
     case "${choice}" in
-      1) install_sillytavern ;;
-      2) start_sillytavern ;;
-      3) stop_sillytavern ;;
-      4) restart_sillytavern ;;
+      1) install_sillytavern; pause_and_back ;;
+      2) start_sillytavern; pause_and_back ;;
+      3) stop_sillytavern; pause_and_back ;;
+      4) restart_sillytavern; pause_and_back ;;
       5)
         show_version
         local ans=""
@@ -706,14 +739,15 @@ menu() {
         fi
         if [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]; then
           switch_version
+          pause_and_back
         fi
         ;;
-      6) configure_nginx ;;
-      7) show_status ;;
-      8) show_logs ;;
-      9) change_auth_credentials ;;
-      10) update_script ;;
-      11) uninstall_sillytavern ;;
+      6) configure_nginx; pause_and_back ;;
+      7) show_status; pause_and_back ;;
+      8) show_logs ;; # 日志查看本身是持续的，不需要额外暂停
+      9) change_auth_credentials; pause_and_back ;;
+      10) update_script; pause_and_back ;;
+      11) uninstall_sillytavern; pause_and_back ;;
       0) exit 0 ;;
       *) warn "无效选项，请重试。" ;;
     esac
