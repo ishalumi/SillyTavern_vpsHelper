@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # SillyTavern VPS 管理脚本（Debian/Ubuntu）
 
-BASE_DIR="/opt/酒馆"
+BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
 SCRIPT_VERSION="1.0.0"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
@@ -12,6 +12,7 @@ ENV_FILE="${BASE_DIR}/.env"
 COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
 NGINX_CONF="/etc/nginx/sites-available/sillytavern.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/sillytavern.conf"
+SELF_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/sillytavern-manager.sh"
 
 SUDO=""
 APT_UPDATED="0"
@@ -113,9 +114,14 @@ install_self() {
   ensure_base_dir
   local current_path
   current_path="$(cd "$(dirname "$0")" && pwd)/${SCRIPT_NAME}"
-  if [[ "${current_path}" != "${BASE_DIR}/${SCRIPT_NAME}" ]]; then
+  if [[ -f "${current_path}" && "${current_path}" != "${BASE_DIR}/${SCRIPT_NAME}" ]]; then
     info "复制脚本到 ${BASE_DIR}..."
     ${SUDO} cp -f "${current_path}" "${BASE_DIR}/${SCRIPT_NAME}"
+    ${SUDO} chmod +x "${BASE_DIR}/${SCRIPT_NAME}"
+  elif [[ ! -f "${current_path}" ]]; then
+    ensure_http_client
+    info "当前为管道执行，正在下载脚本到 ${BASE_DIR}..."
+    http_get "${SELF_URL}" | ${SUDO} tee "${BASE_DIR}/${SCRIPT_NAME}" >/dev/null
     ${SUDO} chmod +x "${BASE_DIR}/${SCRIPT_NAME}"
   fi
   ${SUDO} ln -sf "${BASE_DIR}/${SCRIPT_NAME}" /usr/local/bin/st
