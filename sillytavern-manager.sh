@@ -18,6 +18,7 @@ SUDO=""
 APT_UPDATED="0"
 HTTP_CMD=""
 COMPOSE_CMD=""
+PROMPT_TTY="/dev/stdin"
 
 trap 'echo "❌ 出错了：第 ${LINENO} 行执行失败，请检查后重试。"' ERR
 
@@ -25,6 +26,22 @@ info() { echo "ℹ️  $*"; }
 ok() { echo "✅ $*"; }
 warn() { echo "⚠️  $*"; }
 err() { echo "❌ $*" >&2; }
+
+init_prompt_tty() {
+  if [[ ! -t 0 && -r /dev/tty ]]; then
+    PROMPT_TTY="/dev/tty"
+  fi
+}
+
+prompt() {
+  local __var_name="$1"
+  local __msg="$2"
+  local __value=""
+  if ! IFS= read -r -p "${__msg}" __value < "${PROMPT_TTY}"; then
+    return 1
+  fi
+  printf -v "${__var_name}" '%s' "${__value}"
+}
 
 ensure_os() {
   if [[ -f /etc/os-release ]]; then
@@ -213,7 +230,11 @@ choose_version() {
     fi
   done
   echo
-  read -r -p "请输入编号或版本号（如 1.15.0 / latest）: " input
+  local input=""
+  if ! prompt input "请输入编号或版本号（如 1.15.0 / latest）: "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
   if [[ -z "${input}" ]]; then
     err "输入为空，已取消。"
     return 1
@@ -262,7 +283,11 @@ install_sillytavern() {
 
 prompt_nginx_after_install() {
   echo
-  read -r -p "安装完成，是否需要配置 Nginx 反向代理？(Y/N) " answer
+  local answer=""
+  if ! prompt answer "安装完成，是否需要配置 Nginx 反向代理？(Y/N) "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
   if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
     configure_nginx
   else
@@ -283,7 +308,11 @@ configure_nginx() {
   read_env
 
   warn "提示：默认生成的是 HTTP 反代配置，明文传输存在风险，务必自建 HTTPS。"
-  read -r -p "请输入你的域名（如 tavern.example.com）: " domain
+  local domain=""
+  if ! prompt domain "请输入你的域名（如 tavern.example.com）: "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
   if [[ -z "${domain}" ]]; then
     err "域名不能为空，已取消。"
     return 1
@@ -313,13 +342,22 @@ EOF
   ${SUDO} systemctl reload nginx
   ok "Nginx 反向代理已配置（HTTP）。"
 
-  read -r -p "是否使用 Certbot 自动配置 HTTPS？(Y/N) " tls
+  local tls=""
+  if ! prompt tls "是否使用 Certbot 自动配置 HTTPS？(Y/N) "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
   if [[ "${tls,,}" == "y" || "${tls,,}" == "yes" ]]; then
     if ! command -v certbot >/dev/null 2>&1; then
       info "未发现 certbot，正在安装..."
       apt_install certbot python3-certbot-nginx
     fi
-    read -r -p "请输入证书通知邮箱： " email
+    local email=""
+    if ! prompt email "请输入证书通知邮箱： "; then
+      err "无法读取输入，已取消自动配置 HTTPS。"
+      warn "请自行配置 HTTPS。"
+      return 0
+    fi
     if [[ -z "${email}" ]]; then
       err "邮箱不能为空，已取消自动配置 HTTPS。"
       warn "请自行配置 HTTPS。"
@@ -403,7 +441,11 @@ menu() {
     echo "8. 查看日志"
     echo "0. 退出"
     echo "==========================================="
-    read -r -p "请选择操作: " choice
+    local choice=""
+    if ! prompt choice "请选择操作: "; then
+      err "无法读取输入，已退出。"
+      return 1
+    fi
     case "${choice}" in
       1) install_sillytavern ;;
       2) start_sillytavern ;;
@@ -411,7 +453,11 @@ menu() {
       4) restart_sillytavern ;;
       5)
         show_version
-        read -r -p "是否切换版本？(Y/N) " ans
+        local ans=""
+        if ! prompt ans "是否切换版本？(Y/N) "; then
+          err "无法读取输入，已取消。"
+          continue
+        fi
         if [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]; then
           switch_version
         fi
@@ -427,6 +473,7 @@ menu() {
 
 main() {
   ensure_sudo
+  init_prompt_tty
   install_self
   menu
 }
