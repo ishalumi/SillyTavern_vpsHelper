@@ -43,6 +43,14 @@ prompt() {
   printf -v "${__var_name}" '%s' "${__value}"
 }
 
+tty_out() {
+  if [[ -w "${PROMPT_TTY}" ]]; then
+    printf "%s\n" "$*" > "${PROMPT_TTY}"
+  else
+    printf "%s\n" "$*" >&2
+  fi
+}
+
 ensure_os() {
   if [[ -f /etc/os-release ]]; then
     . /etc/os-release
@@ -129,19 +137,23 @@ ensure_base_dir() {
 
 install_self() {
   ensure_base_dir
-  local current_path
-  current_path="$(cd "$(dirname "$0")" && pwd)/${SCRIPT_NAME}"
-  if [[ -f "${current_path}" && "${current_path}" != "${BASE_DIR}/${SCRIPT_NAME}" ]]; then
+  local target="${BASE_DIR}/${SCRIPT_NAME}"
+  local current_path="$0"
+  if command -v readlink >/dev/null 2>&1; then
+    current_path="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  fi
+  if [[ -f "${target}" ]]; then
+    :
+  elif [[ -f "${current_path}" ]]; then
     info "复制脚本到 ${BASE_DIR}..."
-    ${SUDO} cp -f "${current_path}" "${BASE_DIR}/${SCRIPT_NAME}"
-    ${SUDO} chmod +x "${BASE_DIR}/${SCRIPT_NAME}"
-  elif [[ ! -f "${current_path}" ]]; then
+    ${SUDO} cp -f "${current_path}" "${target}"
+  else
     ensure_http_client
     info "当前为管道执行，正在下载脚本到 ${BASE_DIR}..."
-    http_get "${SELF_URL}" | ${SUDO} tee "${BASE_DIR}/${SCRIPT_NAME}" >/dev/null
-    ${SUDO} chmod +x "${BASE_DIR}/${SCRIPT_NAME}"
+    http_get "${SELF_URL}" | ${SUDO} tee "${target}" >/dev/null
   fi
-  ${SUDO} ln -sf "${BASE_DIR}/${SCRIPT_NAME}" /usr/local/bin/st
+  ${SUDO} chmod +x "${target}"
+  ${SUDO} ln -sf "${target}" /usr/local/bin/st
   ok "命令已注册为 st"
 }
 
@@ -189,23 +201,12 @@ http_get() {
 }
 
 fetch_tags() {
-  local page=1
-  local tags=()
-  while [[ ${page} -le 5 ]]; do
-    local url="https://api.github.com/repos/SillyTavern/SillyTavern/tags?per_page=100&page=${page}"
-    local json
-    json="$(http_get "${url}")"
-    local page_tags
-    page_tags="$(echo "${json}" | grep -o '"name":[ ]*"[^"]*"' | sed -E 's/.*"name":[ ]*"([^"]*)".*/\1/')"
-    if [[ -z "${page_tags}" ]]; then
-      break
-    fi
-    while IFS= read -r t; do
-      tags+=("${t}")
-    done <<< "${page_tags}"
-    page=$((page + 1))
-  done
-  printf "%s\n" "${tags[@]}"
+  ensure_git
+  local repo="https://github.com/SillyTavern/SillyTavern.git"
+  git ls-remote --tags --refs "${repo}" \
+    | awk '{print $2}' \
+    | sed 's#refs/tags/##' \
+    | sort -Vr
 }
 
 choose_version() {
@@ -219,17 +220,17 @@ choose_version() {
   local -a list
   mapfile -t list <<< "${tags}"
 
-  echo "可用版本（最近 20 个）："
-  echo "0) latest"
+  tty_out "可用版本（最近 20 个）："
+  tty_out "0) latest"
   local i=0
   for t in "${list[@]}"; do
     i=$((i + 1))
-    echo "${i}) ${t}"
+    tty_out "${i}) ${t}"
     if [[ ${i} -ge 20 ]]; then
       break
     fi
   done
-  echo
+  tty_out ""
   local input=""
   if ! prompt input "请输入编号或版本号（如 1.15.0 / latest）: "; then
     err "无法读取输入，已取消。"
@@ -264,7 +265,6 @@ docker_compose_up() {
 install_sillytavern() {
   ensure_base_deps
   ensure_base_dir
-  install_self
 
   local version
   version="$(choose_version)"
