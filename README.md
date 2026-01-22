@@ -1,6 +1,6 @@
 # SillyTavern VPS 管理脚本
 
-适用于 Debian/Ubuntu 的一键管理脚本，支持选择版本安装、更新/切换版本、查看日志、可选 Nginx 反代。
+适用于 Debian/Ubuntu 的一键管理脚本，支持选择版本安装、更新/切换版本、查看日志、可选 Caddy 反代（自动 HTTPS / 自签证书）。
 
 ## 一键运行（curl）
 
@@ -44,7 +44,14 @@ st
 ## 依赖说明
 
 - 安装酒馆时自动检查并安装：`curl/wget`、`git`、`docker`、`docker compose`
-- 选择配置反代时才安装：`nginx`、`certbot`
+- 选择配置反代时才安装：`caddy`
+
+## 反向代理（Caddy）
+
+菜单 `6. Caddy 反向代理配置` 支持三种模式：
+- 自动 HTTPS（推荐，需要域名解析正确且 80/443 可访问）
+- 自签证书（`tls internal`，需要在浏览器/系统中信任 Caddy 根证书）
+- 仅 HTTP（不推荐）
 
 ## 访问控制与首次安装
 
@@ -67,6 +74,10 @@ IP 白名单模式并启用用户名密码登录（`basicAuthMode`）。
 - 小白x：`https://github.com/RT15548/LittleWhiteBox`
 - 提示词模板：`https://github.com/zonde306/ST-Prompt-Template/`
 
-## 安全提示（HTTP 风险）
+## 安全提示（HTTPS 风险）
 
-若你在安装完成时拒绝配置 Nginx，脚本会提示 **HTTP 明文访问存在风险**。请务必在 OpenResty/Nginx/其他反代中自建 HTTPS。
+若你在安装完成时拒绝配置反向代理，脚本会展示详细的**安全警告**。
+
+- **明文传输风险**：HTTP 协议下，用户名、密码和聊天记录均以明文传输，极易被监听。
+- **推荐方案**：强烈建议使用 `6. Caddy 反向代理配置` 开启 HTTPS。Caddy 支持自动申请证书、自签证书（tls internal）等多种安全模式。
+- **端口冲突**：配置 Caddy 前请确保 80/443 端口未被 Nginx 或 OpenResty 占用。

@@ -5,13 +5,12 @@ set -Eeuo pipefail
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.4.1"
+SCRIPT_VERSION="1.6.0"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
 COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
-NGINX_CONF="/etc/nginx/sites-available/sillytavern.conf"
-NGINX_LINK="/etc/nginx/sites-enabled/sillytavern.conf"
+CADDYFILE="/etc/caddy/Caddyfile"
 SELF_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/sillytavern-manager.sh"
 CONFIG_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/config.yaml"
 
@@ -203,7 +202,7 @@ ensure_base_deps() {
 }
 
 ensure_base_dir() {
-  ${SUDO} mkdir -p "${BASE_DIR}"/{config,data,plugins,extensions,nginx,ssl}
+  ${SUDO} mkdir -p "${BASE_DIR}"/{config,data,plugins,extensions}
   echo "${SCRIPT_VERSION}" | ${SUDO} tee "${SCRIPT_VERSION_FILE}" >/dev/null
 }
 
@@ -742,95 +741,225 @@ install_sillytavern() {
     fi
   fi
 
-  prompt_nginx_after_install
+  prompt_caddy_after_install
 }
 
-prompt_nginx_after_install() {
+prompt_caddy_after_install() {
   echo
   local answer=""
-  if ! prompt answer "安装完成，是否需要配置 Nginx 反向代理？(Y/N) "; then
+  if ! prompt answer "安装完成，是否需要配置 Caddy 反向代理（强烈建议启用 HTTPS）？(Y/N) "; then
     err "无法读取输入，已取消。"
     return 1
   fi
   if [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]; then
-    configure_nginx
+    configure_caddy
   else
-    warn "已跳过 Nginx 配置。HTTP 明文访问存在风险，请务必在 OpenResty/Nginx/其他反代中自建 HTTPS。"
+    echo -e "${C_RED}================================================${NC}"
+    echo -e "${C_RED}        ⚠️  重要安全警告 (Security Warning) ⚠️${NC}"
+    echo -e "${C_RED}================================================${NC}"
+    echo -e "${C_GOLD}主人，您真的打算在互联网的大街上赤身裸体地奔跑吗？${NC}"
+    echo ""
+    echo -e "  不使用 HTTPS 加密，您的每一个数据包都在向全世界无死角直播。"
+    echo -e "  中间人攻击（MITM）就像是潜伏在暗处的窥视者，能轻而易举地从空气中抓取您的用户名和密码。"
+    echo -e "  那些免费 Wi-Fi 或运营商的节点，就像是沿途的收音机，正完整地重放着您和角色的私密对话。"
+    echo -e "  在明文传输的世界里，您的隐私比一张薄薄的面巾纸还要脆弱。"
+    echo -e "  没有 TLS 握手的保护，不怀好意的人甚至能直接‘魂穿’您的浏览器会话。"
+    echo -e "  反向代理如 Caddy、OpenResty 或 Nginx 绝非虚设，它们是为您守护数据边境的钢铁卫士。"
+    echo -e "  证书验证则是那道唯一的防伪锁，确保您回到的始终是自己那个温馨的家。"
+    echo -e "  请记住，在数字时代，不加密的访问就像是在繁华的大街上大声朗读您和角色的私密日记。"
+    echo -e "  为了保护这些属于我们的珍贵记忆，请务必披上这层铠甲。"
+    echo -e "  尊重隐私，从数清这些句号开始。"
+    echo ""
+    echo -e "${C_RED}================================================${NC}"
+    echo -e "${C_PINK}🐾 苏小糖提示：若要坚持跳过，请输入上述碎碎念中“句号”的总数：${NC}"
+
+    local key=""
+    if ! prompt key "请输入密钥: "; then
+      err "无法读取输入，已取消。"
+      return 1
+    fi
+
+    if [[ "${key}" == "10" ]]; then
+      ok "密钥正确。虽然猫娘很担心，但还是尊重主人的选择喵。"
+      warn "已跳过反向代理配置。请务必尽快自建 HTTPS 环境。"
+    else
+      err "密钥错误！请认真阅读小作文并数清句号数目，喵！"
+      prompt_caddy_after_install
+    fi
   fi
 }
 
-ensure_nginx_deps() {
-  if ! command -v nginx >/dev/null 2>&1; then
-    info "未发现 nginx，正在安装..."
-    apt_install nginx
+ensure_caddy_deps() {
+  if command -v caddy >/dev/null 2>&1; then
+    return 0
   fi
+
+  apt_update_once
+  info "未发现 caddy，正在尝试通过 apt 安装..."
+  if ${SUDO} apt-get install -y caddy; then
+    return 0
+  fi
+
+  warn "apt 直接安装 caddy 失败，可能需要添加 Caddy 官方源。"
+  local ans=""
+  if ! prompt ans "是否添加 Caddy 官方源并安装？(Y/N) "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
+  if [[ "${ans,,}" != "y" && "${ans,,}" != "yes" ]]; then
+    err "未安装 caddy，无法继续配置反向代理。"
+    return 1
+  fi
+
+  # 官方源安装（仅在用户确认后执行）
+  apt_install debian-keyring debian-archive-keyring apt-transport-https ca-certificates curl gnupg
+  curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/gpg.key" \
+    | gpg --dearmor \
+    | ${SUDO} tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null
+  curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt" \
+    | ${SUDO} tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+  ${SUDO} apt-get update -y
+  ${SUDO} apt-get install -y caddy
 }
 
-configure_nginx() {
+ensure_caddyfile() {
+  if [[ -f "${CADDYFILE}" ]]; then
+    return 0
+  fi
+  ${SUDO} mkdir -p "$(dirname "${CADDYFILE}")"
+  ${SUDO} tee "${CADDYFILE}" >/dev/null <<'EOF'
+# Caddyfile
+# 说明：st 仅会维护带有 “BEGIN st: SillyTavern” 标记的区块，其余内容不会改动。
+EOF
+}
+
+write_caddy_block() {
+  local site="$1"
+  local port="$2"
+  local tls_mode="$3" # auto|internal|http
+
+  local tmp_block
+  tmp_block="$(mktemp)"
+  {
+    echo "# BEGIN st: SillyTavern reverse proxy"
+    echo "${site} {"
+    echo "  reverse_proxy 127.0.0.1:${port}"
+    if [[ "${tls_mode}" == "internal" ]]; then
+      echo "  tls internal"
+    fi
+    echo "}"
+    echo "# END st: SillyTavern reverse proxy"
+    echo ""
+  } > "${tmp_block}"
+
+  local tmp_caddy
+  tmp_caddy="$(mktemp)"
+  if [[ -f "${CADDYFILE}" ]]; then
+    sed '/^# BEGIN st: SillyTavern reverse proxy$/,/^# END st: SillyTavern reverse proxy$/d' "${CADDYFILE}" > "${tmp_caddy}"
+  else
+    : > "${tmp_caddy}"
+  fi
+  cat "${tmp_block}" >> "${tmp_caddy}"
+
+  ${SUDO} tee "${CADDYFILE}" >/dev/null < "${tmp_caddy}"
+  rm -f "${tmp_block}" "${tmp_caddy}"
+}
+
+reload_caddy() {
+  ${SUDO} systemctl enable --now caddy >/dev/null 2>&1 || true
+  if ! ${SUDO} systemctl is-active --quiet caddy; then
+    ${SUDO} systemctl start caddy
+  fi
+  ${SUDO} systemctl reload caddy >/dev/null 2>&1 || ${SUDO} systemctl restart caddy
+}
+
+configure_caddy() {
   ensure_sudo
-  ensure_nginx_deps
+
+  # 冲突检测
+  if lsof -i :80 -i :443 -stcp:listen -Fp | grep -q p; then
+    warn "检测到 80 或 443 端口已被占用（可能是 Nginx/OpenResty）。"
+    warn "Caddy 启动需要独占这些端口。请先停止占用端口的服务或修改其配置。"
+    local c_ans=""
+    if ! prompt c_ans "是否仍要继续尝试配置 Caddy？(Y/N) "; then
+      return 1
+    fi
+    if [[ "${c_ans,,}" != "y" && "${c_ans,,}" != "yes" ]]; then
+      return 1
+    fi
+  fi
+
+  ensure_caddy_deps
   read_env
 
-  warn "提示：默认生成的是 HTTP 反代配置，明文传输存在风险，务必自建 HTTPS。"
   local domain=""
-  if ! prompt domain "请输入你的域名（如 tavern.example.com）: "; then
+  if ! prompt domain "请输入你的域名或 IP（如 st.example.com）: "; then
     err "无法读取输入，已取消。"
     return 1
   fi
   if [[ -z "${domain}" ]]; then
-    err "域名不能为空，已取消。"
+    err "域名/IP 不能为空，已取消。"
     return 1
   fi
 
   local port="${ST_PORT:-8000}"
-  info "正在写入 Nginx 配置..."
-  ${SUDO} tee "${NGINX_CONF}" >/dev/null <<EOF
-server {
-  listen 80;
-  server_name ${domain};
-  location / {
-    proxy_pass http://127.0.0.1:${port};
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-  }
-}
-EOF
 
-  ${SUDO} ln -sf "${NGINX_CONF}" "${NGINX_LINK}"
-  ${SUDO} nginx -t
-  ${SUDO} systemctl reload nginx
-  ok "Nginx 反向代理已配置（HTTP）。"
-
-  local tls=""
-  if ! prompt tls "是否使用 Certbot 自动配置 HTTPS？(Y/N) "; then
+  tty_out ""
+  tty_out "证书模式："
+  tty_out "1) 自动 HTTPS（推荐，需域名解析正确且 80/443 可访问）"
+  tty_out "2) 自签证书（tls internal，本机/浏览器需信任根证书）"
+  tty_out "3) 仅 HTTP（不推荐，明文传输有风险）"
+  local mode=""
+  if ! prompt mode "请选择 [1-3]（默认 1）: "; then
     err "无法读取输入，已取消。"
     return 1
   fi
-  if [[ "${tls,,}" == "y" || "${tls,,}" == "yes" ]]; then
-    if ! command -v certbot >/dev/null 2>&1; then
-      info "未发现 certbot，正在安装..."
-      apt_install certbot python3-certbot-nginx
+  mode="${mode:-1}"
+
+  local tls_mode="auto"
+  local site="${domain}"
+  case "${mode}" in
+    1) tls_mode="auto" ;;
+    2) tls_mode="internal" ;;
+    3)
+      tls_mode="http"
+      site="http://${domain}"
+      warn "你选择了仅 HTTP，存在明文传输风险，建议尽快启用 HTTPS。"
+      ;;
+    *)
+      warn "无效选择，默认使用自动 HTTPS。"
+      tls_mode="auto"
+      ;;
+  esac
+
+  ensure_caddyfile
+  local backup=""
+  if [[ -f "${CADDYFILE}" ]]; then
+    backup="${CADDYFILE}.bak.$(date +%Y%m%d%H%M%S)"
+    ${SUDO} cp -f "${CADDYFILE}" "${backup}"
+  fi
+
+  info "正在写入 Caddy 配置..."
+  write_caddy_block "${site}" "${port}" "${tls_mode}"
+
+  if command -v caddy >/dev/null 2>&1; then
+    if ! caddy validate --config "${CADDYFILE}" --adapter caddyfile >/dev/null 2>&1; then
+      err "Caddy 配置校验失败。"
+      if [[ -n "${backup}" && -f "${backup}" ]]; then
+        warn "已恢复备份：${backup}"
+        ${SUDO} cp -f "${backup}" "${CADDYFILE}"
+      fi
+      return 1
     fi
-    local email=""
-    if ! prompt email "请输入证书通知邮箱： "; then
-      err "无法读取输入，已取消自动配置 HTTPS。"
-      warn "请自行配置 HTTPS。"
-      return 0
-    fi
-    if [[ -z "${email}" ]]; then
-      err "邮箱不能为空，已取消自动配置 HTTPS。"
-      warn "请自行配置 HTTPS。"
-      return 0
-    fi
-    ${SUDO} certbot --nginx -d "${domain}" --non-interactive --agree-tos -m "${email}"
-    ok "HTTPS 已配置完成。"
-  else
-    warn "你选择了不自动配置 HTTPS，请务必自行完成 HTTPS 配置。"
+  fi
+
+  reload_caddy
+  ok "Caddy 反向代理已配置完成。"
+
+  if [[ "${tls_mode}" == "internal" ]]; then
+    tty_out ""
+    tty_out "提示：你选择了自签证书（tls internal）。浏览器如提示不受信任，需要导入并信任 Caddy 根证书。"
+    tty_out "通常路径示例：/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt"
   fi
 }
 
@@ -1005,7 +1134,7 @@ menu() {
     echo -e "  4. 重启酒馆"
     echo ""
     echo -e "${C_CYAN}[3] 网络配置 (Networking)${NC}"
-    echo -e "  6. Nginx 反向代理配置"
+    echo -e "  6. Caddy 反向代理配置"
     echo ""
     echo -e "${C_CYAN}[4] 监控与日志 (Monitoring & Logs)${NC}"
     echo -e "  7. 查看状态                  8. 查看日志"
@@ -1040,7 +1169,7 @@ menu() {
           pause_and_back
         fi
         ;;
-      6) configure_nginx; pause_and_back ;;
+      6) configure_caddy; pause_and_back ;;
       7) show_status; pause_and_back ;;
       8) show_logs ;; # 日志查看本身是持续的，不需要额外暂停
       9) change_auth_credentials; pause_and_back ;;
