@@ -5,7 +5,7 @@ set -Eeuo pipefail
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.4.0"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
@@ -250,9 +250,30 @@ EOF
   ${SUDO} mv "${tmp}" "${file}"
 }
 
+apply_security_config() {
+  local cfg="$1"
+  set_yaml_value "whitelistMode" "false" "${cfg}"
+  set_yaml_value "enableForwardedWhitelist" "false" "${cfg}"
+  set_yaml_value "whitelistDockerHosts" "false" "${cfg}"
+  set_yaml_value "basicAuthMode" "true" "${cfg}"
+}
+
 setup_auth_config() {
+  local mode="${1:-auto}" # auto: 仅首次安装提示；force: 强制重新设置
   local cfg="${BASE_DIR}/config/config.yaml"
+  local existed="0"
+  if [[ -f "${cfg}" ]]; then
+    existed="1"
+  fi
   ensure_config_template
+
+  # 每次都确保关闭白名单并启用 basicAuth
+  apply_security_config "${cfg}"
+
+  if [[ "${mode}" != "force" && "${existed}" == "1" ]]; then
+    ok "已应用安全配置（关闭白名单，启用用户名密码），保留现有用户名/密码。"
+    return 0
+  fi
 
   local username=""
   local password=""
@@ -289,39 +310,288 @@ setup_auth_config() {
   u_esc="$(yaml_escape "${username}")"
   p_esc="$(yaml_escape "${password}")"
 
-  set_yaml_value "whitelistMode" "false" "${cfg}"
-  set_yaml_value "enableForwardedWhitelist" "false" "${cfg}"
-  set_yaml_value "whitelistDockerHosts" "false" "${cfg}"
-  set_yaml_value "basicAuthMode" "true" "${cfg}"
   update_basic_auth_user "${cfg}" "${u_esc}" "${p_esc}"
   ok "已更新 config.yaml（已关闭 IP 白名单，启用用户名密码）。"
 }
 
 change_auth_credentials() {
   ensure_base_dir
-  setup_auth_config
+  setup_auth_config force
+}
+
+user_extensions_dir() {
+  echo "${BASE_DIR}/data/${DEFAULT_USER_HANDLE}/extensions"
+}
+
+ensure_user_extensions_dir() {
+  local dir
+  dir="$(user_extensions_dir)"
+  ${SUDO} mkdir -p "${dir}"
+}
+
+repo_name_from_url() {
+  local url="${1%/}"
+  local name="${url##*/}"
+  name="${name%.git}"
+  echo "${name}"
+}
+
+list_user_extensions() {
+  local dir
+  dir="$(user_extensions_dir)"
+  if [[ ! -d "${dir}" ]]; then
+    tty_out "暂无已安装扩展（用户级）。"
+    return 0
+  fi
+
+  local found="0"
+  tty_out "已安装扩展（用户级：${DEFAULT_USER_HANDLE}）："
+  for d in "${dir}"/*; do
+    [[ -d "${d}" ]] || continue
+    local name
+    name="$(basename "${d}")"
+    local rev=""
+    if [[ -d "${d}/.git" ]]; then
+      rev="$(git -C "${d}" rev-parse --short HEAD 2>/dev/null || true)"
+      if [[ -n "${rev}" ]]; then
+        tty_out "- ${name} (${rev})"
+      else
+        tty_out "- ${name}"
+      fi
+    else
+      tty_out "- ${name}"
+    fi
+    found="1"
+  done
+
+  if [[ "${found}" == "0" ]]; then
+    tty_out "暂无已安装扩展（用户级）。"
+  fi
+}
+
+install_user_extension() {
+  local url="$1"
+  local ref="${2:-}"
+
+  ensure_git
+  ensure_base_dir
+  ensure_user_extensions_dir
+
+  local name
+  name="$(repo_name_from_url "${url}")"
+  if [[ -z "${name}" ]]; then
+    err "无法解析扩展名称，请检查 URL。"
+    return 1
+  fi
+
+  local dir
+  dir="$(user_extensions_dir)"
+  local dest="${dir}/${name}"
+
+  if [[ -d "${dest}" ]]; then
+    warn "扩展已存在：${name}"
+    return 0
+  fi
+
+  info "正在安装扩展（用户级）：${name}"
+  if [[ -n "${ref}" ]]; then
+    git clone --depth 1 --branch "${ref}" "${url}" "${dest}"
+  else
+    git clone --depth 1 "${url}" "${dest}"
+  fi
+  ok "已安装扩展：${name}"
+}
+
+install_recommended_extensions() {
+  local mode="${1:-ask}" # ask|yes
+  ensure_base_deps
+  ensure_user_extensions_dir
+
+  tty_out "将安装推荐扩展（用户级：${DEFAULT_USER_HANDLE}）："
+  local i
+  for i in "${!RECOMMENDED_EXT_NAMES[@]}"; do
+    tty_out "- ${RECOMMENDED_EXT_NAMES[$i]} (${RECOMMENDED_EXT_URLS[$i]})"
+  done
+
+  if [[ "${mode}" != "yes" ]]; then
+    local ans=""
+    if ! prompt ans "是否继续安装？(Y/N) "; then
+      err "无法读取输入，已取消。"
+      return 1
+    fi
+    if [[ "${ans,,}" != "y" && "${ans,,}" != "yes" ]]; then
+      warn "已取消安装推荐扩展。"
+      return 0
+    fi
+  fi
+
+  for i in "${!RECOMMENDED_EXT_URLS[@]}"; do
+    install_user_extension "${RECOMMENDED_EXT_URLS[$i]}" ""
+  done
+
+  ok "推荐扩展安装完成。若页面未生效，请刷新浏览器或重启酒馆。"
+}
+
+update_user_extensions() {
+  ensure_git
+  ensure_user_extensions_dir
+
+  local dir
+  dir="$(user_extensions_dir)"
+  local updated="0"
+  for d in "${dir}"/*; do
+    [[ -d "${d}/.git" ]] || continue
+    local name
+    name="$(basename "${d}")"
+    local branch
+    branch="$(git -C "${d}" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+    if [[ -z "${branch}" ]]; then
+      warn "扩展处于固定版本（detached HEAD），跳过更新：${name}"
+      continue
+    fi
+    info "更新扩展：${name}"
+    git -C "${d}" pull --ff-only || warn "更新失败：${name}"
+    updated="1"
+  done
+
+  if [[ "${updated}" == "0" ]]; then
+    warn "未发现可更新的扩展。"
+    return 0
+  fi
+  ok "扩展更新完成。"
+}
+
+choose_installed_extension() {
+  local dir
+  dir="$(user_extensions_dir)"
+  if [[ ! -d "${dir}" ]]; then
+    return 1
+  fi
+
+  local -a exts=()
+  local d
+  for d in "${dir}"/*; do
+    [[ -d "${d}" ]] || continue
+    exts+=("$(basename "${d}")")
+  done
+  if [[ ${#exts[@]} -eq 0 ]]; then
+    return 1
+  fi
+
+  tty_out "请选择要操作的扩展："
+  local i
+  for i in "${!exts[@]}"; do
+    tty_out "$((i + 1))) ${exts[$i]}"
+  done
+
+  local input=""
+  if ! prompt input "请输入编号: "; then
+    return 1
+  fi
+  if [[ ! "${input}" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+  local idx=$((input - 1))
+  if [[ ${idx} -lt 0 || ${idx} -ge ${#exts[@]} ]]; then
+    return 1
+  fi
+  echo "${exts[$idx]}"
+}
+
+uninstall_user_extension() {
+  ensure_sudo
+  ensure_user_extensions_dir
+
+  local name=""
+  if ! name="$(choose_installed_extension)"; then
+    warn "暂无可卸载的扩展。"
+    return 0
+  fi
+  confirm_danger "将删除用户级扩展：${name}（不可恢复）" || return 0
+
+  local dir
+  dir="$(user_extensions_dir)"
+  ${SUDO} rm -rf "${dir:?}/${name}"
+  ok "已卸载扩展：${name}"
+}
+
+extensions_menu() {
+  while true; do
+    tty_out ""
+    tty_out "========== 扩展管理（用户级） =========="
+    tty_out "1. 安装推荐扩展"
+    tty_out "2. 安装扩展（自定义 Git URL）"
+    tty_out "3. 列出已安装扩展"
+    tty_out "4. 更新所有扩展"
+    tty_out "5. 卸载扩展"
+    tty_out "0. 返回"
+    tty_out "======================================"
+    local choice=""
+    if ! prompt choice "请选择操作: "; then
+      return 0
+    fi
+    case "${choice}" in
+      1) install_recommended_extensions ;;
+      2)
+        local url=""
+        local ref=""
+        if ! prompt url "请输入扩展 Git URL: "; then
+          continue
+        fi
+        if [[ -z "${url}" ]]; then
+          warn "URL 不能为空。"
+          continue
+        fi
+        prompt ref "Branch 或 Tag（可选，直接回车跳过）: " || true
+        install_user_extension "${url}" "${ref}"
+        ;;
+      3) list_user_extensions ;;
+      4) update_user_extensions ;;
+      5) uninstall_user_extension ;;
+      0) return 0 ;;
+      *) warn "无效选项，请重试。" ;;
+    esac
+  done
 }
 
 install_self() {
   ensure_base_dir
   local target="${BASE_DIR}/${SCRIPT_NAME}"
   local current_path="$0"
+  local changed="0"
   if command -v readlink >/dev/null 2>&1; then
     current_path="$(readlink -f "$0" 2>/dev/null || echo "$0")"
   fi
-  if [[ -f "${target}" ]]; then
-    :
-  elif [[ -f "${current_path}" ]]; then
-    info "复制脚本到 ${BASE_DIR}..."
-    ${SUDO} cp -f "${current_path}" "${target}"
-  else
-    ensure_http_client
-    info "当前为管道执行，正在下载脚本到 ${BASE_DIR}..."
-    http_get "${SELF_URL}" | ${SUDO} tee "${target}" >/dev/null
+  if [[ ! -f "${target}" ]]; then
+    if [[ -f "${current_path}" ]]; then
+      info "复制脚本到 ${BASE_DIR}..."
+      ${SUDO} cp -f "${current_path}" "${target}"
+    else
+      ensure_http_client
+      info "当前为管道执行，正在下载脚本到 ${BASE_DIR}..."
+      http_get "${SELF_URL}" | ${SUDO} tee "${target}" >/dev/null
+    fi
+    changed="1"
   fi
-  ${SUDO} chmod +x "${target}"
-  ${SUDO} ln -sf "${target}" /usr/local/bin/st
-  ok "命令已注册为 st"
+
+  if [[ ! -x "${target}" ]]; then
+    ${SUDO} chmod +x "${target}"
+    changed="1"
+  fi
+
+  local link="/usr/local/bin/st"
+  local link_target=""
+  if command -v readlink >/dev/null 2>&1; then
+    link_target="$(readlink -f "${link}" 2>/dev/null || true)"
+  fi
+  if [[ "${link_target}" != "${target}" ]]; then
+    ${SUDO} ln -sf "${target}" "${link}"
+    changed="1"
+  fi
+
+  if [[ "${changed}" == "1" ]]; then
+    ok "命令已注册为 st"
+  fi
 }
 
 read_env() {
@@ -455,6 +725,14 @@ install_sillytavern() {
   info "正在拉取并启动 SillyTavern..."
   docker_compose_up
   ok "SillyTavern 已安装并启动。"
+
+  echo
+  local ext_ans=""
+  if prompt ext_ans "是否安装推荐扩展（用户级）？(Y/N) "; then
+    if [[ "${ext_ans,,}" == "y" || "${ext_ans,,}" == "yes" ]]; then
+      install_recommended_extensions yes
+    fi
+  fi
 
   prompt_nginx_after_install
 }
@@ -724,13 +1002,16 @@ menu() {
     echo -e "${C_CYAN}[4] 监控与日志 (Monitoring & Logs)${NC}"
     echo -e "  7. 查看状态                  8. 查看日志"
     echo ""
-    echo -e "${C_CYAN}[5] 系统与安全 (System & Security)${NC}"
+    echo -e "${C_CYAN}[5] 扩展管理 (Extensions)${NC}"
+    echo -e " 12. 扩展管理（用户级）"
+    echo ""
+    echo -e "${C_CYAN}[6] 系统与安全 (System & Security)${NC}"
     echo -e "  9. 修改用户名/密码          10. 更新管理脚本"
     echo -e " 11. 卸载酒馆并清空数据        ${C_GRAY}0. 退出${NC}"
     echo -e "${C_GRAY}------------------------------------------------${NC}"
 
     local choice=""
-    if ! prompt choice "${C_GOLD}🐾 请选择操作 [0-11]: ${NC}"; then
+    if ! prompt choice "${C_GOLD}🐾 请选择操作 [0-12]: ${NC}"; then
       err "无法读取输入，已退出。"
       return 1
     fi
@@ -757,6 +1038,7 @@ menu() {
       9) change_auth_credentials; pause_and_back ;;
       10) update_script; pause_and_back ;;
       11) uninstall_sillytavern; pause_and_back ;;
+      12) extensions_menu ;;
       0) exit 0 ;;
       *) warn "无效选项，请重试。" ;;
     esac
