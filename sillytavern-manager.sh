@@ -5,14 +5,29 @@ set -Eeuo pipefail
 
 BASE_DIR="/opt/sillytavern"
 SCRIPT_NAME="sillytavern-manager.sh"
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 SCRIPT_VERSION_FILE="${BASE_DIR}/.script_version"
 VERSION_FILE="${BASE_DIR}/.tavern_version"
 ENV_FILE="${BASE_DIR}/.env"
 COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
 CADDYFILE="/etc/caddy/Caddyfile"
+CADDY_RENEW_SERVICE="/etc/systemd/system/st-caddy-renew.service"
+CADDY_RENEW_TIMER="/etc/systemd/system/st-caddy-renew.timer"
 SELF_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/sillytavern-manager.sh"
 CONFIG_URL="https://raw.githubusercontent.com/ishalumi/SillyTavern_vpsHelper/main/config.yaml"
+
+# ==== ST_UPDATE_NOTES_BEGIN ====
+# [1.1.0] 2026-02-27
+# - 新增 Caddy 引导公网 IP 自动检测，支持 1=IPv4、2=IPv6、3=域名。
+# - 新增 IP 公信任 HTTPS（Let's Encrypt 短周期）与失败回退自签模式。
+# - 新增证书续期守护定时器 st-caddy-renew.timer（每 6 小时）。
+#
+# [TEMPLATE]
+# [x.y.z] YYYY-MM-DD
+# - 新增：
+# - 优化：
+# - 修复：
+# ==== ST_UPDATE_NOTES_END ====
 
 # 用户级扩展默认落在 data/default-user/extensions
 DEFAULT_USER_HANDLE="default-user"
@@ -56,6 +71,49 @@ ok() { echo -e "${C_LIME}✅ $*${NC}"; }
 warn() { echo -e "${C_GOLD}⚠️  $*${NC}"; }
 err() { echo -e "${C_RED}❌ $*${NC}" >&2; }
 
+extract_script_version_from_text() {
+  local text="$1"
+  echo "${text}" | grep -m1 '^SCRIPT_VERSION=' | sed -E "s/^SCRIPT_VERSION=['\"]?([^'\"]+)['\"]?/\1/" | tr -d '\r\n ' || true
+}
+
+extract_script_version_from_file() {
+  local file="$1"
+  grep -m1 '^SCRIPT_VERSION=' "${file}" | sed -E "s/^SCRIPT_VERSION=['\"]?([^'\"]+)['\"]?/\1/" | tr -d '\r\n ' || true
+}
+
+extract_update_notes_from_file() {
+  local file="$1"
+  local version="$2"
+  awk -v ver="${version}" '
+    BEGIN { in_notes=0; capture=0; found=0 }
+    /^# ==== ST_UPDATE_NOTES_BEGIN ====$/ { in_notes=1; next }
+    /^# ==== ST_UPDATE_NOTES_END ====$/ { in_notes=0; capture=0; next }
+    in_notes==1 {
+      line=$0
+      sub(/^# ?/, "", line)
+      if (line ~ /^\[[^]]+\]/) {
+        if (line ~ "^\\[" ver "\\]") {
+          capture=1
+          found=1
+          print line
+          next
+        }
+        if (capture==1) {
+          exit
+        }
+      }
+      if (capture==1 && line != "") {
+        print line
+      }
+    }
+    END {
+      if (found!=1) {
+        exit 1
+      }
+    }
+  ' "${file}"
+}
+
 fetch_remote_version() {
   # 版本检查不应触发依赖安装或导致脚本报错；失败时返回 Unknown。
   local body=""
@@ -71,8 +129,7 @@ fetch_remote_version() {
   fi
 
   local v=""
-  # 兼容单引号、双引号、无引号，且只取第一行匹配项
-  v="$(echo "${body}" | grep -m1 '^SCRIPT_VERSION=' | sed -E "s/^SCRIPT_VERSION=['\"]?([^'\"]+)['\"]?/\1/" | tr -d '\r\n ' || true)"
+  v="$(extract_script_version_from_text "${body}")"
   echo "${v:-Unknown}"
 }
 
@@ -854,10 +911,142 @@ ensure_caddyfile() {
 EOF
 }
 
+is_ipv4() {
+  local ip="$1"
+  [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+
+  local IFS='.'
+  local -a octets=()
+  read -r -a octets <<< "${ip}"
+  local octet
+  for octet in "${octets[@]}"; do
+    [[ "${octet}" =~ ^[0-9]+$ ]] || return 1
+    local value=$((10#${octet}))
+    if ((value > 255)); then
+      return 1
+    fi
+  done
+  return 0
+}
+
+is_ipv6() {
+  local ip="$1"
+  [[ "${ip}" == *:* ]] || return 1
+  [[ "${ip}" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+  [[ "${ip}" != *":::"* ]] || return 1
+  if [[ "${ip}" == :* && "${ip}" != ::* ]]; then
+    return 1
+  fi
+  if [[ "${ip}" == *: && "${ip}" != *:: ]]; then
+    return 1
+  fi
+
+  local double_colon_count
+  double_colon_count="$(grep -o "::" <<< "${ip}" | wc -l | tr -d ' ')"
+  if ((double_colon_count > 1)); then
+    return 1
+  fi
+
+  local IFS=':'
+  local -a groups=()
+  read -r -a groups <<< "${ip}"
+  local g
+  for g in "${groups[@]}"; do
+    [[ -z "${g}" ]] && continue
+    [[ "${g}" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+  done
+
+  if [[ "${ip}" != *"::"* && ${#groups[@]} -ne 8 ]]; then
+    return 1
+  fi
+  return 0
+}
+
+is_ip_address() {
+  local input="$1"
+  is_ipv4 "${input}" || is_ipv6 "${input}"
+}
+
+strip_ipv6_brackets() {
+  local input="$1"
+  if [[ "${input}" =~ ^\[(.+)\]$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  else
+    echo "${input}"
+  fi
+}
+
+format_caddy_host() {
+  local host="$1"
+  if is_ipv6 "${host}"; then
+    echo "[${host}]"
+  else
+    echo "${host}"
+  fi
+}
+
+fetch_public_ip_with_family() {
+  local family="$1" # 4|6
+  local url="$2"
+  local out=""
+
+  if command -v curl >/dev/null 2>&1; then
+    if [[ "${family}" == "4" ]]; then
+      out="$(curl -4fsSL --connect-timeout 2 --max-time 4 "${url}" 2>/dev/null || true)"
+    else
+      out="$(curl -6fsSL --connect-timeout 2 --max-time 4 "${url}" 2>/dev/null || true)"
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if [[ "${family}" == "4" ]]; then
+      out="$(wget -4 -qO- --timeout=4 "${url}" 2>/dev/null || true)"
+    else
+      out="$(wget -6 -qO- --timeout=4 "${url}" 2>/dev/null || true)"
+    fi
+  fi
+
+  echo "${out}" | tr -d '\r\n '
+}
+
+detect_public_ipv4() {
+  local -a urls=(
+    "https://api.ipify.org"
+    "https://ipv4.icanhazip.com"
+    "https://checkip.amazonaws.com"
+  )
+  local url
+  for url in "${urls[@]}"; do
+    local ip
+    ip="$(fetch_public_ip_with_family 4 "${url}")"
+    if is_ipv4 "${ip}"; then
+      echo "${ip}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+detect_public_ipv6() {
+  local -a urls=(
+    "https://api64.ipify.org"
+    "https://ipv6.icanhazip.com"
+    "https://ifconfig.co/ip"
+  )
+  local url
+  for url in "${urls[@]}"; do
+    local ip
+    ip="$(fetch_public_ip_with_family 6 "${url}")"
+    if is_ipv6 "${ip}"; then
+      echo "${ip}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 write_caddy_block() {
   local site="$1"
   local port="$2"
-  local tls_mode="$3" # auto|internal|http
+  local tls_mode="$3" # auto|internal|http|ip_public
 
   local tmp_block
   tmp_block="$(mktemp)"
@@ -867,6 +1056,15 @@ write_caddy_block() {
     echo "  reverse_proxy 127.0.0.1:${port}"
     if [[ "${tls_mode}" == "internal" ]]; then
       echo "  tls internal"
+    elif [[ "${tls_mode}" == "ip_public" ]]; then
+      cat <<'EOF'
+  tls {
+    issuer acme {
+      dir https://acme-v02.api.letsencrypt.org/directory
+      profile shortlived
+    }
+  }
+EOF
     fi
     echo "}"
     echo "# END st: SillyTavern reverse proxy"
@@ -894,6 +1092,44 @@ reload_caddy() {
   ${SUDO} systemctl reload caddy >/dev/null 2>&1 || ${SUDO} systemctl restart caddy
 }
 
+ensure_caddy_renewal_program() {
+  local caddy_bin=""
+  caddy_bin="$(command -v caddy 2>/dev/null || true)"
+  if [[ -z "${caddy_bin}" ]]; then
+    warn "未找到 caddy 可执行文件，跳过续期守护程序配置。"
+    return 0
+  fi
+
+  ${SUDO} tee "${CADDY_RENEW_SERVICE}" >/dev/null <<EOF
+[Unit]
+Description=SillyTavern Caddy Renew Worker
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/bin/systemctl start caddy && ${caddy_bin} reload --config ${CADDYFILE} --adapter caddyfile'
+EOF
+
+  ${SUDO} tee "${CADDY_RENEW_TIMER}" >/dev/null <<'EOF'
+[Unit]
+Description=Run SillyTavern Caddy Renew Worker every 6 hours
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=6h
+Unit=st-caddy-renew.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  ${SUDO} systemctl daemon-reload
+  ${SUDO} systemctl enable --now st-caddy-renew.timer >/dev/null 2>&1
+  ok "证书续期程序已拉起（st-caddy-renew.timer，每 6 小时检查一次）。"
+}
+
 configure_caddy() {
   ensure_sudo
 
@@ -913,21 +1149,99 @@ configure_caddy() {
   ensure_caddy_deps
   read_env
 
-  local domain=""
-  if ! prompt domain "请输入你的域名或 IP（如 st.example.com）: "; then
+  local port="${ST_PORT:-8000}"
+  local target_mode=""
+  local addr_mode=""
+  local raw_target=""
+  local normalized_target=""
+  local site_host=""
+  local detected_ipv4=""
+  local detected_ipv6=""
+
+  ensure_http_client
+  info "正在检测公网 IP，请稍候..."
+  detected_ipv4="$(detect_public_ipv4 || true)"
+  detected_ipv6="$(detect_public_ipv6 || true)"
+
+  tty_out ""
+  tty_out "检测结果："
+  tty_out "- IPv4: ${detected_ipv4:-未检测到}"
+  tty_out "- IPv6: ${detected_ipv6:-未检测到}"
+  tty_out ""
+  tty_out "搭建方式："
+  tty_out "1) 使用 IPv4 搭建"
+  tty_out "2) 使用 IPv6 搭建"
+  tty_out "3) 使用域名搭建"
+  if ! prompt addr_mode "请选择 [1-3]（默认 1）: "; then
     err "无法读取输入，已取消。"
     return 1
   fi
-  if [[ -z "${domain}" ]]; then
-    err "域名/IP 不能为空，已取消。"
-    return 1
+  addr_mode="${addr_mode:-1}"
+  if [[ "${addr_mode}" != "1" && "${addr_mode}" != "2" && "${addr_mode}" != "3" ]]; then
+    warn "无效选择，默认使用 IPv4 搭建。"
+    addr_mode="1"
   fi
 
-  local port="${ST_PORT:-8000}"
+  if [[ "${addr_mode}" == "1" ]]; then
+    target_mode="ip"
+    if [[ -n "${detected_ipv4}" ]]; then
+      normalized_target="${detected_ipv4}"
+      info "将使用检测到的 IPv4：${normalized_target}"
+    else
+      warn "未检测到 IPv4，请手动输入。"
+      if ! prompt raw_target "请输入你的 IPv4（如 1.2.3.4）: "; then
+        err "无法读取输入，已取消。"
+        return 1
+      fi
+      if ! is_ipv4 "${raw_target}"; then
+        err "IPv4 格式无效，已取消。"
+        return 1
+      fi
+      normalized_target="${raw_target}"
+    fi
+  elif [[ "${addr_mode}" == "2" ]]; then
+    target_mode="ip"
+    if [[ -n "${detected_ipv6}" ]]; then
+      normalized_target="${detected_ipv6}"
+      info "将使用检测到的 IPv6：${normalized_target}"
+    else
+      warn "未检测到 IPv6，请手动输入。"
+      if ! prompt raw_target "请输入你的 IPv6（如 2408:xxxx::1）: "; then
+        err "无法读取输入，已取消。"
+        return 1
+      fi
+      raw_target="$(strip_ipv6_brackets "${raw_target}")"
+      if ! is_ipv6 "${raw_target}"; then
+        err "IPv6 格式无效，已取消。"
+        return 1
+      fi
+      normalized_target="${raw_target}"
+    fi
+  else
+    target_mode="domain"
+    if ! prompt raw_target "请输入你的域名（如 st.example.com）: "; then
+      err "无法读取输入，已取消。"
+      return 1
+    fi
+    if [[ -z "${raw_target}" ]]; then
+      err "域名不能为空，已取消。"
+      return 1
+    fi
+    if [[ "${raw_target}" =~ [[:space:]] ]]; then
+      err "域名中不能包含空格，已取消。"
+      return 1
+    fi
+    normalized_target="${raw_target}"
+  fi
+  site_host="$(format_caddy_host "${normalized_target}")"
 
   tty_out ""
   tty_out "证书模式："
-  tty_out "1) 自动 HTTPS（推荐，需域名解析正确且 80/443 可访问）"
+  if [[ "${target_mode}" == "domain" ]]; then
+    tty_out "1) 自动 HTTPS（推荐，需域名解析正确且 80/443 可访问）"
+  else
+    tty_out "1) IP 公信任 HTTPS（Let's Encrypt 短周期证书，需公网开放 80/443）"
+  fi
   tty_out "2) 自签证书（tls internal，本机/浏览器需信任根证书）"
   tty_out "3) 仅 HTTP（不推荐，明文传输有风险）"
   local mode=""
@@ -938,18 +1252,28 @@ configure_caddy() {
   mode="${mode:-1}"
 
   local tls_mode="auto"
-  local site="${domain}"
+  local site="${site_host}"
   case "${mode}" in
-    1) tls_mode="auto" ;;
+    1)
+      if [[ "${target_mode}" == "domain" ]]; then
+        tls_mode="auto"
+      else
+        tls_mode="ip_public"
+      fi
+      ;;
     2) tls_mode="internal" ;;
     3)
       tls_mode="http"
-      site="http://${domain}"
+      site="http://${site_host}"
       warn "你选择了仅 HTTP，存在明文传输风险，建议尽快启用 HTTPS。"
       ;;
     *)
-      warn "无效选择，默认使用自动 HTTPS。"
-      tls_mode="auto"
+      warn "无效选择，默认使用推荐选项。"
+      if [[ "${target_mode}" == "domain" ]]; then
+        tls_mode="auto"
+      else
+        tls_mode="ip_public"
+      fi
       ;;
   esac
 
@@ -965,22 +1289,47 @@ configure_caddy() {
 
   if command -v caddy >/dev/null 2>&1; then
     if ! caddy validate --config "${CADDYFILE}" --adapter caddyfile >/dev/null 2>&1; then
-      err "Caddy 配置校验失败。"
-      if [[ -n "${backup}" && -f "${backup}" ]]; then
-        warn "已恢复备份：${backup}"
-        ${SUDO} cp -f "${backup}" "${CADDYFILE}"
+      if [[ "${tls_mode}" == "ip_public" ]]; then
+        warn "IP 公信任证书配置校验失败，自动回退到 tls internal 自签模式。"
+        tls_mode="internal"
+        write_caddy_block "${site}" "${port}" "${tls_mode}"
+        if ! caddy validate --config "${CADDYFILE}" --adapter caddyfile >/dev/null 2>&1; then
+          err "Caddy 配置校验失败。"
+          if [[ -n "${backup}" && -f "${backup}" ]]; then
+            warn "已恢复备份：${backup}"
+            ${SUDO} cp -f "${backup}" "${CADDYFILE}"
+          fi
+          return 1
+        fi
+      else
+        err "Caddy 配置校验失败。"
+        if [[ -n "${backup}" && -f "${backup}" ]]; then
+          warn "已恢复备份：${backup}"
+          ${SUDO} cp -f "${backup}" "${CADDYFILE}"
+        fi
+        return 1
       fi
-      return 1
     fi
   fi
 
   reload_caddy
+  ensure_caddy_renewal_program
   ok "Caddy 反向代理已配置完成。"
+
+  local access_scheme="https"
+  if [[ "${tls_mode}" == "http" ]]; then
+    access_scheme="http"
+  fi
+  tty_out "访问地址：${access_scheme}://${site_host}"
 
   if [[ "${tls_mode}" == "internal" ]]; then
     tty_out ""
     tty_out "提示：你选择了自签证书（tls internal）。浏览器如提示不受信任，需要导入并信任 Caddy 根证书。"
     tty_out "通常路径示例：/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt"
+  elif [[ "${tls_mode}" == "ip_public" ]]; then
+    tty_out ""
+    tty_out "提示：你选择了 IP 公信任证书（Let's Encrypt 短周期证书）。"
+    tty_out "首次签发与续期依赖公网 80/443 连通，失败时可查看：journalctl -u caddy -f"
   fi
 }
 
@@ -1049,6 +1398,9 @@ update_script() {
   ensure_http_client
   local target="${BASE_DIR}/${SCRIPT_NAME}"
   local tmp
+  local remote_v="Unknown"
+  local notes=""
+  local ans=""
   tmp="$(mktemp)"
   info "正在更新管理脚本..."
   http_get "${SELF_URL}" > "${tmp}"
@@ -1057,6 +1409,40 @@ update_script() {
     rm -f "${tmp}"
     return 1
   fi
+
+  remote_v="$(extract_script_version_from_file "${tmp}")"
+  remote_v="${remote_v:-Unknown}"
+
+  if [[ "${remote_v}" == "${SCRIPT_VERSION}" ]]; then
+    ok "当前已是最新版本（${SCRIPT_VERSION}），无需更新。"
+    rm -f "${tmp}"
+    return 0
+  fi
+
+  tty_out ""
+  tty_out "即将更新脚本：${SCRIPT_VERSION} -> ${remote_v}"
+  tty_out "更新说明："
+  notes="$(extract_update_notes_from_file "${tmp}" "${remote_v}" 2>/dev/null || true)"
+  if [[ -n "${notes}" ]]; then
+    while IFS= read -r line; do
+      tty_out "  ${line}"
+    done <<< "${notes}"
+  else
+    tty_out "  - 暂无该版本说明。"
+    tty_out "  - 可在脚本头部 ST_UPDATE_NOTES 区块补充。"
+  fi
+
+  if ! prompt ans "确认更新到 ${remote_v} 吗？(Y/N) "; then
+    err "无法读取输入，已取消。"
+    rm -f "${tmp}"
+    return 1
+  fi
+  if [[ "${ans,,}" != "y" && "${ans,,}" != "yes" ]]; then
+    warn "已取消更新。"
+    rm -f "${tmp}"
+    return 0
+  fi
+
   ${SUDO} cp -f "${tmp}" "${target}"
   ${SUDO} chmod +x "${target}"
   rm -f "${tmp}"
@@ -1093,6 +1479,10 @@ uninstall_sillytavern() {
     "${COMPOSE_FILE}" \
     "${ENV_FILE}" \
     "${VERSION_FILE}"
+
+  ${SUDO} systemctl disable --now st-caddy-renew.timer >/dev/null 2>&1 || true
+  ${SUDO} rm -f "${CADDY_RENEW_SERVICE}" "${CADDY_RENEW_TIMER}"
+  ${SUDO} systemctl daemon-reload >/dev/null 2>&1 || true
 
   ok "已卸载酒馆并清空数据。"
 }
