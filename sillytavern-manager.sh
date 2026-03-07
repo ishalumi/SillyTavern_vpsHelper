@@ -890,6 +890,10 @@ ensure_caddy_deps() {
   fi
 
   # 官方源安装（仅在用户确认后执行）
+  install_or_upgrade_caddy_from_official_repo
+}
+
+install_or_upgrade_caddy_from_official_repo() {
   apt_install debian-keyring debian-archive-keyring apt-transport-https ca-certificates curl gnupg
   curl -1sLf "https://dl.cloudsmith.io/public/caddy/stable/gpg.key" \
     | gpg --dearmor \
@@ -898,6 +902,63 @@ ensure_caddy_deps() {
     | ${SUDO} tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
   ${SUDO} apt-get update -y
   ${SUDO} apt-get install -y caddy
+}
+
+caddy_supports_ip_public_certificates() {
+  if ! command -v caddy >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local tmp_cfg=""
+  tmp_cfg="$(mktemp)"
+  cat > "${tmp_cfg}" <<'EOF'
+example.com {
+  tls {
+    issuer acme {
+      dir https://acme-v02.api.letsencrypt.org/directory
+      profile shortlived
+    }
+  }
+  respond "ok"
+}
+EOF
+
+  if caddy validate --config "${tmp_cfg}" --adapter caddyfile >/dev/null 2>&1; then
+    rm -f "${tmp_cfg}"
+    return 0
+  fi
+
+  rm -f "${tmp_cfg}"
+  return 1
+}
+
+ensure_caddy_ip_public_support() {
+  ensure_caddy_deps
+  if caddy_supports_ip_public_certificates; then
+    return 0
+  fi
+
+  warn "当前 Caddy 版本不支持 IP 公信任证书所需的 shortlived profile。"
+  warn "通常是因为系统仓库中的 Caddy 版本较旧，需要升级到官方稳定版。"
+
+  local ans=""
+  if ! prompt ans "是否升级到 Caddy 官方稳定版以启用 IP 公信任证书？(Y/N) "; then
+    err "无法读取输入，已取消。"
+    return 1
+  fi
+  if [[ "${ans,,}" != "y" && "${ans,,}" != "yes" ]]; then
+    warn "未升级 Caddy，将无法启用 IP 公信任证书。"
+    return 1
+  fi
+
+  install_or_upgrade_caddy_from_official_repo
+  if caddy_supports_ip_public_certificates; then
+    ok "Caddy 已升级到支持 IP 公信任证书的版本。"
+    return 0
+  fi
+
+  err "升级后仍未检测到 shortlived profile 支持，无法启用 IP 公信任证书。"
+  return 1
 }
 
 ensure_caddyfile() {
@@ -1276,6 +1337,13 @@ configure_caddy() {
       fi
       ;;
   esac
+
+  if [[ "${tls_mode}" == "ip_public" ]]; then
+    if ! ensure_caddy_ip_public_support; then
+      warn "当前环境无法启用 IP 公信任证书，自动回退到 tls internal 自签模式。"
+      tls_mode="internal"
+    fi
+  fi
 
   ensure_caddyfile
   local backup=""

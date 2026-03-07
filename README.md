@@ -75,6 +75,10 @@ st
 - 新增 IP 公信任 HTTPS（Let's Encrypt 短周期）与失败回退自签模式。
 - 新增证书续期守护定时器 `st-caddy-renew.timer`（每 6 小时）。
 
+### [1.1.1] 2026-03-07
+- 修复旧版 Caddy 无法识别 `profile shortlived`，导致 IP 公信任证书配置误回退到 `tls internal` 的问题。
+- 新增 IP 公信任模式下的 Caddy 能力检测；如本机版本过旧，将提示升级到官方稳定版后再继续。
+
 ### [TEMPLATE]
 - 版本：`x.y.z`
 - 日期：`YYYY-MM-DD`
